@@ -2,15 +2,16 @@ const fs = require('fs');
 const csv = require('csv-parser');
 const axios = require('axios');
 
+const API_KEY = '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';
 const INPUT_CSV = 'news.csv';
-const OUTPUT_FILE = 'summary.txt';
-const API_KEY = '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';
+const OUTPUT_FILE = 'summary.json';
+const MODEL = 'baidu/cobuddy:free';
 
 async function readFullCSVAsNews(filePath) {
     const rows = [];
-    const stream = fs.createReadStream(filePath)
-        .pipe(csv());
+    if (!fs.existsSync(filePath)) throw new Error(`Файл ${filePath} не найден!`);
 
+    const stream = fs.createReadStream(filePath).pipe(csv());
     for await (const row of stream) {
         rows.push(row);
     }
@@ -23,27 +24,26 @@ async function readFullCSVAsNews(filePath) {
         });
         fullText += '\n';
     });
-
-    return fullText || fs.readFileSync(filePath, 'utf8');
+    return fullText;
 }
 
 async function getSummary(text) {
     try {
         const response = await axios.post(
-            'https://api.groq.com/openai/v1/chat/completions',
+            'https://openrouter.ai/api/v1/chat/completions',
             {
-                model: 'llama-3.3-70b-versatile',
+                model: MODEL,
                 messages: [
                     {
                         role: 'system',
-                        content: 'Ты помощник, который делает краткое содержание новостей. Ответь кратко, 2-3 предложения.'
+                        content: 'Ты аналитик данных. Твой ответ должен содержать ТОЛЬКО валидный JSON. Не пиши пояснений. Структура: {"title": "заголовок", "summary": "описание", "key_points": ["факт1", "факт2", "факт3"]}'
                     },
                     {
                         role: 'user',
-                        content: `Сделай краткое содержание этой новости (2-3 предложения):\n\n${text.substring(0, 3000)}`
+                        content: `Проанализируй эти новости и верни JSON:\n\n${text.substring(0, 5000)}`
                     }
                 ],
-                temperature: 0.7
+                response_format: { "type": "json_object" }
             },
             {
                 headers: {
@@ -53,24 +53,36 @@ async function getSummary(text) {
             }
         );
 
-        return response.data.choices[0].message.content;
+        let content = response.data.choices[0].message.content;
+
+        content = content.replace(/^```json/g, '').replace(/```$/g, '').trim();
+
+        try {
+            return JSON.parse(content);
+        } catch (e) {
+            console.error('Не удалось распарсить JSON. Сырой ответ модели:', content);
+            return { error: 'Ошибка формата', rawResponse: content };
+        }
     } catch (error) {
         console.error('Ошибка API:', error.response?.data || error.message);
-        return 'Не удалось создать пересказ';
+        return { error: 'Ошибка API' };
     }
 }
 
 async function main() {
-    const newsContent = await readFullCSVAsNews(INPUT_CSV);
+    try {
+        console.log('--- Начинаю чтение CSV ---');
+        const newsContent = await readFullCSVAsNews(INPUT_CSV);
+        console.log(`Прочитано ${newsContent.length} символов. Отправляю запрос...`);
 
-    console.log(`Длина новости: ${newsContent.length} символов`);
+        const summaryData = await getSummary(newsContent);
 
-    const summary = await getSummary(newsContent);
-
-    const output = `КРАТКОЕ СОДЕРЖАНИЕ НОВОСТИ:\n${'='.repeat(60)}\n${summary}\n\n${'='.repeat(60)}`;
-
-    fs.writeFileSync(OUTPUT_FILE, output, 'utf8');
-    console.log(`Результат сохранён в ${OUTPUT_FILE}`);
+        fs.writeFileSync(OUTPUT_FILE, JSON.stringify(summaryData, null, 4), 'utf8');
+        console.log('--- Готово! ---');
+        console.log(`Результат сохранён в файл: ${OUTPUT_FILE}`);
+    } catch (err) {
+        console.error('Критическая ошибка:', err.message);
+    }
 }
 
-main().catch(console.error);
+main();
